@@ -10,13 +10,31 @@ function Home() {
     const handleGenerate = async () => {
         setIsGenerating(true);
         try {
-            // TODO: Add AI generation logic here
-            // For now, just simulate a delay
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            // Placeholder: Later this will be replaced with actual AI-generated ABC notation
-            setAbcNotation("E2 E2 | F2 F2 | G2 G2 | C4 |");
+            const response = await fetch('/api/generate-etude/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({})
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                // Extract the first tune from the generated ABC content
+                const tunes = data.abc_notation.split('\n\n');
+                if (tunes.length > 0) {
+                    // Get the first tune and remove the X: header line for display
+                    const firstTune = tunes[0].split('\n').slice(1).join('\n');
+                    setAbcNotation(firstTune);
+                }
+            } else {
+                console.error('Generation failed:', data.error);
+                alert('Failed to generate etude: ' + data.error);
+            }
         } catch (error) {
             console.error('Error generating etude:', error);
+            alert('Error generating etude: ' + error.message);
         } finally {
             setIsGenerating(false);
         }
