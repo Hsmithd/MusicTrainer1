@@ -3,7 +3,6 @@ import ABCJS from 'abcjs';
 import { Settings, Play, Pause, Square } from 'lucide-react';
 import './MidiScoreViewer.css';
 
-
 const TIME_SIGNATURES = [
     { numerator: 4, denominator: 4, display: "4/4" },
     { numerator: 3, denominator: 4, display: "3/4" },
@@ -36,9 +35,11 @@ const ScoreViewer = ({ abcNotation = '' }) => {
     const [title, setTitle] = useState('New Score');
     const [showSettings, setShowSettings] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
+    const [audioInitialized, setAudioInitialized] = useState(false);
     const scoreRef = useRef(null);
     const synthRef = useRef(null);
-    const visualizerRef = useRef(null);
+    const visualObjRef = useRef(null);
+    const audioContextRef = useRef(null);
 
     useEffect(() => {
         updateScore();
@@ -46,6 +47,9 @@ const ScoreViewer = ({ abcNotation = '' }) => {
         return () => {
             if (synthRef.current) {
                 synthRef.current.stop();
+            }
+            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+                audioContextRef.current.close();
             }
         };
     }, [abcNotation, timeSignature, selectedKey, tempo, title]);
@@ -63,74 +67,140 @@ K:${selectedKey}
 
         const fullNotation = headerString + (abcNotation || 'z4 |]');
 
-        // Create the visual score
-        const visualObj = ABCJS.renderAbc(scoreRef.current, fullNotation, {
-            responsive: 'resize',
-            add_classes: true,
-            staffwidth: 600, // Set a specific width to force wrapping
-            scale: 0.1,
-            paddingbottom: 40,
-            paddingright: 40,
-            paddingleft: 40,
-            paddingtop: 40,
-            wrap: {
-                minSpacing: 1.8,
-                maxSpacing: 2.7,
-                preferredMeasuresPerLine: 16 // Adjust this to control measures per line
-            },
-            format: {
-                measurenumber: true,
-                vocalfont: "Arial 12",
-                composerfont: "Arial 14",
-                titlefont: "Arial 16",
-                tempofont: "Arial 12",
-                annotationfont: "Arial 10",
-                footerfont: "Arial 10",
-                headerfont: "Arial 10",
-                textfont: "Arial 12",
-                wordsfont: "Arial 12"
+        try {
+            // Create the visual score
+            const visualObj = ABCJS.renderAbc(scoreRef.current, fullNotation, {
+                responsive: 'resize',
+                add_classes: true,
+                staffwidth: 600,
+                scale: 0.8,
+                paddingbottom: 40,
+                paddingright: 40,
+                paddingleft: 40,
+                paddingtop: 40,
+                wrap: {
+                    minSpacing: 1.8,
+                    maxSpacing: 2.7,
+                    preferredMeasuresPerLine: 16
+                },
+                format: {
+                    measurenumber: true,
+                    vocalfont: "Arial 12",
+                    composerfont: "Arial 14",
+                    titlefont: "Arial 16",
+                    tempofont: "Arial 12",
+                    annotationfont: "Arial 10",
+                    footerfont: "Arial 10",
+                    headerfont: "Arial 10",
+                    textfont: "Arial 12",
+                    wordsfont: "Arial 12"
+                }
+            });
+
+            // Store the visual object for audio initialization
+            if (visualObj && visualObj.length > 0) {
+                visualObjRef.current = visualObj[0];
+                // Reset audio initialization when score changes
+                setAudioInitialized(false);
             }
-        });
+        } catch (error) {
+            console.error("Error rendering score:", error);
+        }
+    };
 
-
-        if (!synthRef.current) {
-            synthRef.current = new ABCJS.synth.CreateSynth();
+    const initializeAudio = async () => {
+        if (!visualObjRef.current) {
+            console.error("No visual object available for audio");
+            return false;
         }
 
-        // Initialize audio context and prepare the tune
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const visualObj0 = visualObj[0];
+        try {
+            // Create audio context on user interaction
+            if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+            }
 
-        if (visualObj0) {
-            synthRef.current.init({
-                audioContext: audioContext,
-                visualObj: visualObj0,
-                millisecondsPerMeasure: (60000 / tempo) * timeSignature.numerator
-            }).then(() => {
-                console.log("Audio ready");
-            }).catch(error => {
-                console.error("Audio initialization failed:", error);
+            // Resume audio context if suspended
+            if (audioContextRef.current.state === 'suspended') {
+                await audioContextRef.current.resume();
+            }
+
+            // Create synth if it doesn't exist
+            if (!synthRef.current) {
+                synthRef.current = new ABCJS.synth.CreateSynth();
+            }
+
+            // Initialize the synth with the current score
+            await synthRef.current.init({
+                audioContext: audioContextRef.current,
+                visualObj: visualObjRef.current,
+                millisecondsPerMeasure: (60000 / tempo) * timeSignature.numerator,
+                options: {
+                    program: 0, // Piano sound
+                    midiTranspose: 0,
+                    qpm: tempo
+                }
             });
+
+            setAudioInitialized(true);
+            console.log("Audio initialized successfully");
+            return true;
+        } catch (error) {
+            console.error("Audio initialization failed:", error);
+            setAudioInitialized(false);
+            return false;
         }
     };
 
     const handlePlayback = async () => {
-        if (!synthRef.current) return;
-
         if (isPlaying) {
-            synthRef.current.stop();
-            setIsPlaying(false);
-        } else {
-            try {
-                await synthRef.current.start();
-                setIsPlaying(true);
-                synthRef.current.addEventListener('ended', () => {
-                    setIsPlaying(false);
-                });
-            } catch (error) {
-                console.error("Playback failed:", error);
+            // Stop playback
+            if (synthRef.current) {
+                synthRef.current.stop();
                 setIsPlaying(false);
             }
+            return;
+        }
+
+        try {
+            // Initialize audio if not already done or if score changed
+            if (!audioInitialized || !synthRef.current) {
+                const initialized = await initializeAudio();
+                if (!initialized) {
+                    return;
+                }
+            }
+
+            // Ensure audio context is running
+            if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+                await audioContextRef.current.resume();
+            }
+
+            // Start playback
+            await synthRef.current.start();
+            setIsPlaying(true);
+
+            // Handle playback end
+            const handleEnded = () => {
+                setIsPlaying(false);
+            };
+
+            // Remove any existing event listeners
+            if (synthRef.current.removeEventListener) {
+                synthRef.current.removeEventListener('ended', handleEnded);
+            }
+
+            // Add new event listener
+            if (synthRef.current.addEventListener) {
+                synthRef.current.addEventListener('ended', handleEnded);
+            }
+
+        } catch (error) {
+            console.error("Playback failed:", error);
+            setIsPlaying(false);
+
+            // Try to reinitialize audio on next attempt
+            setAudioInitialized(false);
         }
     };
 
@@ -147,6 +217,7 @@ K:${selectedKey}
             denominator: sig.denominator
         });
     };
+
     const downloadAbc = () => {
         const headerString = `X:1
 T:${title}
@@ -167,6 +238,7 @@ K:${selectedKey}
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
     };
+
     return (
         <div className="score-viewer">
             <div className="header">
@@ -176,6 +248,7 @@ K:${selectedKey}
                         className="playback-button"
                         onClick={handlePlayback}
                         title={isPlaying ? "Pause" : "Play"}
+                        disabled={!visualObjRef.current}
                     >
                         {isPlaying ? <Pause size={24} /> : <Play size={24} />}
                     </button>
@@ -183,12 +256,14 @@ K:${selectedKey}
                         className="stop-button"
                         onClick={handleStop}
                         title="Stop"
+                        disabled={!isPlaying}
                     >
                         <Square size={24} />
                     </button>
                     <button
                         className="settings-button"
                         onClick={() => setShowSettings(!showSettings)}
+                        title="Settings"
                     >
                         <Settings size={24} />
                     </button>
@@ -203,7 +278,7 @@ K:${selectedKey}
                             type="text"
                             value={title}
                             onChange={(e) => setTitle(e.target.value)}
-                            className="title-input"
+                            className="setting-input"
                         />
                     </div>
                     <div className="setting-group">
@@ -214,7 +289,7 @@ K:${selectedKey}
                             onChange={(e) => setTempo(parseInt(e.target.value))}
                             min="40"
                             max="208"
-                            className="tempo-input"
+                            className="setting-input"
                         />
                     </div>
                     <div className="setting-group">
@@ -228,7 +303,7 @@ K:${selectedKey}
                                     denominator: parseInt(den)
                                 });
                             }}
-                            className="time-signature-select"
+                            className="setting-input"
                         >
                             {TIME_SIGNATURES.map((sig) => (
                                 <option key={sig.display} value={sig.display}>
@@ -242,7 +317,7 @@ K:${selectedKey}
                         <select
                             value={selectedKey}
                             onChange={(e) => setSelectedKey(e.target.value)}
-                            className="key-signature-select"
+                            className="setting-input"
                         >
                             {KEY_SIGNATURES.map((sig) => (
                                 <option key={sig.key} value={sig.key}>
@@ -257,6 +332,12 @@ K:${selectedKey}
                 </div>
             )}
             <div ref={scoreRef} className="score-container"></div>
+
+            {!audioInitialized && (
+                <div className="audio-status">
+                    <small>Audio will initialize on first play</small>
+                </div>
+            )}
         </div>
     );
 };
