@@ -36,6 +36,13 @@ const ScoreViewer = ({ abcNotation = '' }) => {
     const [showSettings, setShowSettings] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [audioInitialized, setAudioInitialized] = useState(false);
+
+    // Difficulty sliders state
+    const [rhythmDifficulty, setRhythmDifficulty] = useState(1);
+    const [pitchDifficulty, setPitchDifficulty] = useState(1);
+    const [harmonyDifficulty, setHarmonyDifficulty] = useState(1);
+    const [technicalDifficulty, setTechnicalDifficulty] = useState(1);
+
     const scoreRef = useRef(null);
     const synthRef = useRef(null);
     const visualObjRef = useRef(null);
@@ -242,7 +249,7 @@ K:${selectedKey}
     return (
         <div className="score-viewer">
             <div className="header">
-                <h1 className="title">ABC Score Editor</h1>
+                <h1 className="title">ABC Score Viewer</h1>
                 <div className="controls">
                     <button
                         className="playback-button"
@@ -326,11 +333,82 @@ K:${selectedKey}
                             ))}
                         </select>
                     </div>
+
+                    {/* Difficulty Sliders Section */}
+                    <div className="difficulty-section">
+                        <h3 className="section-title">Difficulty Settings</h3>
+
+                        <div className="slider-group">
+                            <label>Rhythm Difficulty: {rhythmDifficulty}</label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="10"
+                                value={rhythmDifficulty}
+                                onChange={(e) => setRhythmDifficulty(parseInt(e.target.value))}
+                                className="difficulty-slider"
+                            />
+                            <div className="slider-labels">
+                                <span>Simple</span>
+                                <span>Complex</span>
+                            </div>
+                        </div>
+
+                        <div className="slider-group">
+                            <label>Pitch Difficulty: {pitchDifficulty}</label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="10"
+                                value={pitchDifficulty}
+                                onChange={(e) => setPitchDifficulty(parseInt(e.target.value))}
+                                className="difficulty-slider"
+                            />
+                            <div className="slider-labels">
+                                <span>Basic</span>
+                                <span>Advanced</span>
+                            </div>
+                        </div>
+
+                        <div className="slider-group">
+                            <label>Harmony Difficulty: {harmonyDifficulty}</label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="10"
+                                value={harmonyDifficulty}
+                                onChange={(e) => setHarmonyDifficulty(parseInt(e.target.value))}
+                                className="difficulty-slider"
+                            />
+                            <div className="slider-labels">
+                                <span>Simple</span>
+                                <span>Complex</span>
+                            </div>
+                        </div>
+
+                        <div className="slider-group">
+                            <label>Technical Difficulty: {technicalDifficulty}</label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="10"
+                                value={technicalDifficulty}
+                                onChange={(e) => setTechnicalDifficulty(parseInt(e.target.value))}
+                                className="difficulty-slider"
+                            />
+                            <div className="slider-labels">
+                                <span>Easy</span>
+                                <span>Expert</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <button onClick={downloadAbc} className="download-button">
                         Download ABC
                     </button>
                 </div>
             )}
+
             <div ref={scoreRef} className="score-container"></div>
 
             {!audioInitialized && (

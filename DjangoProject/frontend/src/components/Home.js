@@ -1,36 +1,40 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import './Home.css';
 import ScoreViewer from './MidiScoreViewer';
 import { Wand2 } from 'lucide-react';
 
 function Home() {
-    const [abcNotation, setAbcNotation] = useState("C2 C2 | G2 G2 | A2 A2 | G4 | G2 G2 | A2 A2 | G4 | G2 G2 | A2 A2 | G4 |");
+    const [abcNotation, setAbcNotation] = useState(
+        "C2 C2 | G2 G2 | A2 A2 | G4 | G2 G2 | A2 A2 | G4 | G2 G2 | A2 A2 | G4 |"
+    );
     const [isGenerating, setIsGenerating] = useState(false);
+
+    // Difficulty slider states
+    const [difficulty, setDifficulty] = useState(5);
+    const [complexity, setComplexity] = useState(5);
+    const [speed, setSpeed] = useState(5);
 
     const handleGenerate = async () => {
         setIsGenerating(true);
         try {
             const response = await fetch('/api/generate-etude/', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ difficulty, complexity, speed }),
             });
 
             const data = await response.json();
 
-            if (data.success) {
-                // Extract the first tune from the generated ABC content
+            if (data.success && data.abc_notation) {
                 const tunes = data.abc_notation.split('\n\n');
-                if (tunes.length > 0) {
-                    // Get the first tune and remove the X: header line for display
-                    const firstTune = tunes[0].split('\n').slice(1).join('\n');
-                    setAbcNotation(firstTune);
-                }
+                const firstTune = tunes.length > 0
+                    ? tunes[0].split('\n').slice(1).join('\n')
+                    : '';
+                setAbcNotation(firstTune);
             } else {
                 console.error('Generation failed:', data.error);
-                alert('Failed to generate etude: ' + data.error);
+                alert('Failed to generate etude: ' + (data.error || 'Unknown error'));
             }
         } catch (error) {
             console.error('Error generating etude:', error);
@@ -49,10 +53,10 @@ function Home() {
                     MusicTrainer
                 </div>
                 <div className="nav-links">
-                    <a href="#home" className="nav-link active">Home</a>
+                    <Link to="/home" className="nav-link">Home</Link>
                     <a href="#practice" className="nav-link">Ear Training</a>
                     <a href="#stats" className="nav-link">Statistics</a>
-                    <a href="#profile" className="nav-link">Profile</a>
+                    <Link to="/profile" className="nav-link">Profile</Link>
                 </div>
             </nav>
 
@@ -80,14 +84,7 @@ function Home() {
                     </div>
                 </div>
                 <div className="score-container">
-                    <ScoreViewer abcNotation={abcNotation} />
-                </div>
-            </section>
-
-            {/* Action Buttons */}
-            <section className="action-section">
-                <div className="button-grid">
-
+                    {ScoreViewer ? <ScoreViewer abcNotation={abcNotation} /> : <p>Loading ScoreViewer...</p>}
                 </div>
             </section>
 
