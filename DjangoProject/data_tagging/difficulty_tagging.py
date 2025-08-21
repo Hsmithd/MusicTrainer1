@@ -1,23 +1,41 @@
+#!/usr/bin/env python3
+"""
+tag_from_input_output.py
+
+Compute difficulty from BOTH the record's `input` and `output` fields, combine the
+scores (methods: max, avg, weighted), auto-calibrate thresholds (33rd/66th percentiles),
+and prepend the computed <difficulty=...> tag to `input` if it doesn't already contain one.
+
+Behavior:
+ - If `input` already contains a difficulty tag, it is left unchanged.
+ - `task` is preserved (or inferred if missing).
+ - `output` is preserved exactly (never modified).
+ - Default combine method: 'max' (conservative: if either side is hard, tag hard).
+ - You can choose 'avg' or 'weighted' (and pass weights for input/output).
+
+Usage:
+    python tag_from_input_output.py --input validation.jsonl --output validation_tagged.jsonl
+    python tag_from_input_output.py --combine-method weighted --w-input 0.4 --w-output 0.6
+"""
+
+import json
 import re
-import multiprocessing
+import argparse
 import numpy as np
-from datasets import load_dataset
-
-OUTPUT_FILE = "melodyhub_tagged.txt"
-
 
 # -------------------------
 # Feature extraction
 # -------------------------
 def difficulty_features(abc_string):
-    unique_pitches = len(set(re.findall(r"[A-Ga-g]", abc_string)))
-    unique_rhythms = len(set(re.findall(r"\d+", abc_string)))
-    accidentals = abc_string.count('^') + abc_string.count('_')
-    ornaments = len(re.findall(r"[~HLMOPSTuv]", abc_string))
-    note_count = len(re.findall(r"[A-Ga-g]", abc_string))
+    s = str(abc_string or "")
+    unique_pitches = len(set(re.findall(r"[A-Ga-g]", s)))
+    unique_rhythms = len(set(re.findall(r"\d+", s)))
+    accidentals = s.count('^') + s.count('_')
+    ornaments = len(re.findall(r"[~HLMOPSTuv]", s))
+    note_count = len(re.findall(r"[A-Ga-g]", s))
 
-    tempo_match = re.search(r"Q:\s*\d+", abc_string)
-    tempo = int(re.search(r"\d+", tempo_match.group()).group()) if tempo_match else 100
+    tempo_match = re.search(r"Q:\s*(\d+)", s)
+    tempo = int(tempo_match.group(1)) if tempo_match else 100
 
     return {
         "unique_pitches": unique_pitches,
@@ -28,56 +46,121 @@ def difficulty_features(abc_string):
         "tempo": tempo
     }
 
+# -------------------------
+# Scoring
+# -------------------------
+DEFAULT_WEIGHTS = {
+    "unique_pitches": 1.5,
+    "unique_rhythms": 1.2,
+    "accidentals": 1.3,
+    "ornaments": 1.5,
+    "note_count": 0.01,
+    "tempo": 0.02
+}
 
-# -------------------------
-# Scoring with weights
-# -------------------------
 def calibrated_difficulty_score(abc_string, weights):
     feats = difficulty_features(abc_string)
     tempo_factor = max(feats["tempo"] - 60, 0)
-
     return (
-            feats["unique_pitches"] * weights["unique_pitches"] +
-            feats["unique_rhythms"] * weights["unique_rhythms"] +
-            feats["accidentals"] * weights["accidentals"] +
-            feats["ornaments"] * weights["ornaments"] +
-            feats["note_count"] * weights["note_count"] +
-            tempo_factor * weights["tempo"]
+        feats["unique_pitches"] * weights["unique_pitches"] +
+        feats["unique_rhythms"] * weights["unique_rhythms"] +
+        feats["accidentals"] * weights["accidentals"] +
+        feats["ornaments"] * weights["ornaments"] +
+        feats["note_count"] * weights["note_count"] +
+        tempo_factor * weights["tempo"]
     )
 
+# -------------------------
+# Helpers: detect ABC presence & tags
+# -------------------------
+DIFFICULTY_RE = re.compile(r"<\s*difficulty\s*=\s*(easy|medium|hard)\s*>", flags=re.I)
+ABC_PRESENCE_RE = re.compile(r"[A-Ga-g]|T:|K:|L:|M:")  # simple heuristic
+
+def has_difficulty_tag(s):
+    return bool(s and DIFFICULTY_RE.search(s))
+
+def contains_abc(s):
+    return bool(s and ABC_PRESENCE_RE.search(s))
 
 # -------------------------
-# Auto-calibration
+# Combine input/output scores
 # -------------------------
-def auto_calibrate(dataset, abc_key):
-    # Initial guess for weights
-    weights = {
-        "unique_pitches": 1.5,
-        "unique_rhythms": 1.2,
-        "accidentals": 1.3,
-        "ornaments": 1.5,
-        "note_count": 0.01,
-        "tempo": 0.02
-    }
+def combine_scores(score_in, score_out, method="max", w_in=0.5, w_out=0.5):
+    # score_in/out can be None
+    if score_in is None and score_out is None:
+        return None
+    if score_in is None:
+        return score_out
+    if score_out is None:
+        return score_in
 
+    if method == "max":
+        return max(score_in, score_out)
+    elif method == "avg":
+        return 0.5 * (score_in + score_out)
+    elif method == "weighted":
+        total = w_in + w_out
+        if total == 0:
+            return 0.5 * (score_in + score_out)
+        return (w_in * score_in + w_out * score_out) / total
+    else:
+        # fallback to max
+        return max(score_in, score_out)
+
+# -------------------------
+# Auto-calibration (first pass streaming)
+# -------------------------
+def auto_calibrate_from_file(input_path, sample_limit=2000, weights=DEFAULT_WEIGHTS,
+                             combine_method="max", w_in=0.5, w_out=0.5):
     scores = []
-    for record in dataset:
-        melody = str(record[abc_key]).strip()
-        if melody:
-            scores.append(calibrated_difficulty_score(melody, weights))
+    seen = 0
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
 
-    scores = np.array(scores)
-    # Pick thresholds so ~33% easy, ~33% medium, ~33% hard
-    easy_thresh = np.percentile(scores, 33)
-    medium_thresh = np.percentile(scores, 66)
+            inp = rec.get("input", "") or ""
+            out = rec.get("output", "") or ""
 
-    return weights, (easy_thresh, medium_thresh)
+            # compute per-side scores only if ABC-like content exists on that side
+            s_in = None
+            s_out = None
+            try:
+                if contains_abc(inp):
+                    s_in = calibrated_difficulty_score(inp, weights)
+                if contains_abc(out):
+                    s_out = calibrated_difficulty_score(out, weights)
+            except Exception:
+                pass
 
+            combined = combine_scores(s_in, s_out, method=combine_method, w_in=w_in, w_out=w_out)
+            if combined is not None:
+                scores.append(combined)
+
+            seen += 1
+            if sample_limit and len(scores) >= sample_limit:
+                break
+
+    if not scores:
+        # fallback thresholds
+        return weights, (10.0, 30.0)
+
+    arr = np.array(scores)
+    easy = float(np.percentile(arr, 33))
+    medium = float(np.percentile(arr, 66))
+    return weights, (easy, medium)
 
 # -------------------------
-# Difficulty tag function
+# Difficulty tag selection
 # -------------------------
 def get_difficulty_tag(score, thresholds):
+    if score is None:
+        # default to medium when no score
+        return "<difficulty=medium>"
     if score <= thresholds[0]:
         return "<difficulty=easy>"
     elif score <= thresholds[1]:
@@ -85,61 +168,117 @@ def get_difficulty_tag(score, thresholds):
     else:
         return "<difficulty=hard>"
 
+# -------------------------
+# Infer task (preserve if present)
+# -------------------------
+def infer_task(record, output_text):
+    if record.get("task"):
+        return str(record["task"])
+    for candidate in ("type", "label"):
+        if candidate in record and record[candidate]:
+            return str(record[candidate])
+    s = (output_text or "") + "\n" + (record.get("input") or "")
+    if re.search(r"%%\s*generation", s, flags=re.I) or "%%generation" in s:
+        return "generation"
+    if re.search(r"%%\s*cataloging", s, flags=re.I) or "%%cataloging" in s:
+        return "cataloging"
+    if re.search(r"%%\s*segmentation", s, flags=re.I) or "%%segmentation" in s:
+        return "segmentation"
+    return "cataloging"
 
 # -------------------------
-# Processing function
+# Transform: second pass writes tagged JSONL
 # -------------------------
-def process(record, abc_key, weights, thresholds):
-    melody = str(record.get(abc_key, "")).strip()
-    if not melody:
-        return None
-    score = calibrated_difficulty_score(melody, weights)
-    tag = get_difficulty_tag(score, thresholds)
-    return {"input": f"{tag} generate melody", "target": melody}
+def transform_file(input_path, output_path, sample_calib=2000, combine_method="max",
+                   w_in=0.5, w_out=0.5, dataset_name_default="ABC Notation"):
 
+    print(f"Auto-calibrating from {input_path} (sampling up to {sample_calib}) ...")
+    weights, thresholds = auto_calibrate_from_file(input_path, sample_limit=sample_calib,
+                                                   weights=DEFAULT_WEIGHTS,
+                                                   combine_method=combine_method,
+                                                   w_in=w_in, w_out=w_out)
+    print(f"Calibration done. thresholds: easy <= {thresholds[0]:.4f}, medium <= {thresholds[1]:.4f}")
+
+    total = 0
+    written = 0
+    with open(input_path, "r", encoding="utf-8") as fi, open(output_path, "w", encoding="utf-8") as fo:
+        for line in fi:
+            total += 1
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+
+            # ensure dataset exists
+            if not rec.get("dataset"):
+                rec["dataset"] = dataset_name_default
+
+            # preserve or infer task
+            task_val = rec.get("task") if rec.get("task") else infer_task(rec, rec.get("output", ""))
+            rec["task"] = task_val
+
+            input_text = rec.get("input", "") or ""
+            output_text = rec.get("output", "") or ""
+
+            # If input already has difficulty tag, keep it exactly
+            if has_difficulty_tag(input_text):
+                new_input = input_text
+            else:
+                # compute per-side scores if ABC-like content exists
+                s_in = None
+                s_out = None
+                try:
+                    if contains_abc(input_text):
+                        s_in = calibrated_difficulty_score(input_text, weights)
+                    if contains_abc(output_text):
+                        s_out = calibrated_difficulty_score(output_text, weights)
+                except Exception:
+                    s_in = s_in or None
+                    s_out = s_out or None
+
+                combined = combine_scores(s_in, s_out, method=combine_method, w_in=w_in, w_out=w_out)
+
+                # fallback if no combined score
+                if combined is None:
+                    # choose medium by default
+                    tag = "<difficulty=medium>"
+                else:
+                    tag = get_difficulty_tag(combined, thresholds)
+
+                if str(input_text).strip() == "":
+                    new_input = f"{tag} "
+                else:
+                    new_input = f"{tag} {input_text}"
+
+            # preserve output exactly
+            rec["input"] = new_input
+            rec["output"] = output_text
+
+            fo.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            written += 1
+
+    print(f"Finished. Processed {total} lines, wrote {written} records to {output_path}")
 
 # -------------------------
-# Main
+# CLI
 # -------------------------
+def main():
+    p = argparse.ArgumentParser(description="Tag JSONL records using difficulty computed from input+output.")
+    p.add_argument("--input", "-i", default="validation.jsonl", help="input JSONL path")
+    p.add_argument("--output", "-o", default="validation_tagged.jsonl", help="output JSONL path")
+    p.add_argument("--sample-calib", type=int, default=2000, help="how many combined scores to sample for calibration")
+    p.add_argument("--combine-method", choices=("max", "avg", "weighted"), default="max",
+                   help="how to combine input/output scores into a single difficulty score (default: max)")
+    p.add_argument("--w-input", type=float, default=0.5, help="weight for input when --combine-method weighted")
+    p.add_argument("--w-output", type=float, default=0.5, help="weight for output when --combine-method weighted")
+    p.add_argument("--dataset-name", default="ABC Notation", help="default dataset name if missing")
+    args = p.parse_args()
+
+    transform_file(args.input, args.output, sample_calib=args.sample_calib,
+                   combine_method=args.combine_method, w_in=args.w_input, w_out=args.w_output,
+                   dataset_name_default=args.dataset_name)
+
 if __name__ == "__main__":
-    print("Loading MelodyHub dataset...")
-    dataset = load_dataset("sander-wood/melodyhub", split="train")
-    print("Dataset loaded.")
-
-
-    # Detect ABC notation column
-    def find_abc_key(dataset):
-        for key in dataset.column_names:
-            sample_value = str(dataset[0][key]) if dataset[0][key] else ""
-            if re.search(r"[A-Ga-g]", sample_value) and len(sample_value) > 20:
-                return key
-        raise ValueError("Could not find ABC notation column.")
-
-
-    abc_key = find_abc_key(dataset)
-    print(f"Detected ABC column: '{abc_key}'")
-
-    # Calibrate
-    print("Calibrating difficulty scoring...")
-    weights, thresholds = auto_calibrate(dataset, abc_key)
-    print(f"Selected thresholds: Easy ≤ {thresholds[0]:.2f}, Medium ≤ {thresholds[1]:.2f}, Hard > {thresholds[1]:.2f}")
-
-    # Process with multiprocessing
-    num_cores = multiprocessing.cpu_count()
-    tagged = dataset.map(
-        process,
-        fn_kwargs={"abc_key": abc_key, "weights": weights, "thresholds": thresholds},
-        remove_columns=dataset.column_names,
-        num_proc=num_cores,
-        desc="Tagging melodies"
-    )
-
-    # Remove None results
-    tagged = tagged.filter(lambda x: x["input"] is not None)
-
-    # Save to file
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        for row in tagged:
-            f.write(f"{row['input']}\t{row['target']}\n")
-
-    print(f"✅ Tagged {len(tagged)} melodies and saved to {OUTPUT_FILE}")
+    main()

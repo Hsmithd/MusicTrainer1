@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ABCJS from 'abcjs';
-import { Settings, Play, Pause, Square } from 'lucide-react';
+import { Settings } from 'lucide-react';
 import './MidiScoreViewer.css';
 
 const TIME_SIGNATURES = [
@@ -13,55 +13,124 @@ const TIME_SIGNATURES = [
 ];
 
 const KEY_SIGNATURES = [
-    { key: 'C', display: 'C Major' },
-    { key: 'G', display: 'G Major' },
-    { key: 'D', display: 'D Major' },
-    { key: 'A', display: 'A Major' },
-    { key: 'E', display: 'E Major' },
-    { key: 'F', display: 'F Major' },
-    { key: 'Bb', display: 'Bb Major' },
-    { key: 'Eb', display: 'Eb Major' },
-    { key: 'Am', display: 'A Minor' },
-    { key: 'Em', display: 'E Minor' },
-    { key: 'Bm', display: 'B Minor' },
-    { key: 'Dm', display: 'D Minor' },
-    { key: 'Gm', display: 'G Minor' }
+    { key: 'C', display: 'C Major', semitones: 0 },
+    { key: 'G', display: 'G Major', semitones: 7 },
+    { key: 'D', display: 'D Major', semitones: 2 },
+    { key: 'A', display: 'A Major', semitones: 9 },
+    { key: 'E', display: 'E Major', semitones: 4 },
+    { key: 'F', display: 'F Major', semitones: 5 },
+    { key: 'Bb', display: 'Bb Major', semitones: 10 },
+    { key: 'Eb', display: 'Eb Major', semitones: 3 },
+    { key: 'Am', display: 'A Minor', semitones: 9 },
+    { key: 'Em', display: 'E Minor', semitones: 4 },
+    { key: 'Bm', display: 'B Minor', semitones: 11 },
+    { key: 'Dm', display: 'D Minor', semitones: 2 },
+    { key: 'Gm', display: 'G Minor', semitones: 10 }
+];
+
+const PLAYBACK_KEYS = [
+    { key: 'C', display: 'C', semitones: 0 },
+    { key: 'C#', display: 'C#/Db', semitones: 1 },
+    { key: 'D', display: 'D', semitones: 2 },
+    { key: 'D#', display: 'D#/Eb', semitones: 3 },
+    { key: 'E', display: 'E', semitones: 4 },
+    { key: 'F', display: 'F', semitones: 5 },
+    { key: 'F#', display: 'F#/Gb', semitones: 6 },
+    { key: 'G', display: 'G', semitones: 7 },
+    { key: 'G#', display: 'G#/Ab', semitones: 8 },
+    { key: 'A', display: 'A', semitones: 9 },
+    { key: 'A#', display: 'A#/Bb', semitones: 10 },
+    { key: 'B', display: 'B', semitones: 11 }
 ];
 
 const ScoreViewer = ({ abcNotation = '' }) => {
     const [timeSignature, setTimeSignature] = useState({ numerator: 4, denominator: 4 });
     const [selectedKey, setSelectedKey] = useState('C');
+    const [playbackKey, setPlaybackKey] = useState('C');
     const [tempo, setTempo] = useState(120);
     const [title, setTitle] = useState('New Score');
     const [showSettings, setShowSettings] = useState(false);
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [audioInitialized, setAudioInitialized] = useState(false);
-
-    // Difficulty sliders state
-    const [rhythmDifficulty, setRhythmDifficulty] = useState(1);
-    const [pitchDifficulty, setPitchDifficulty] = useState(1);
-    const [harmonyDifficulty, setHarmonyDifficulty] = useState(1);
-    const [technicalDifficulty, setTechnicalDifficulty] = useState(1);
 
     const scoreRef = useRef(null);
     const synthRef = useRef(null);
     const visualObjRef = useRef(null);
     const audioContextRef = useRef(null);
+    const synthControlRef = useRef(null);
+    const synthControlDiv = useRef(null);
+    const currentNotationRef = useRef('');
+    const currentSongIdRef = useRef(null);
+
+    // Generate a unique song ID based on the ABC notation content
+    const generateSongId = (notation) => {
+        return btoa(notation).slice(0, 16);
+    };
 
     useEffect(() => {
         updateScore();
-        // Clean up synth on unmount
         return () => {
-            if (synthRef.current) {
-                synthRef.current.stop();
-            }
-            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-                audioContextRef.current.close();
-            }
+            cleanup();
         };
     }, [abcNotation, timeSignature, selectedKey, tempo, title]);
 
-    const updateScore = () => {
+    useEffect(() => {
+        // Force synth recreation when playback key changes
+        if (visualObjRef.current) {
+            console.log("Playback key changed, recreating synth...");
+            setupSynthController(true);
+        }
+    }, [playbackKey]);
+
+    const cleanup = () => {
+        if (synthRef.current) {
+            try {
+                synthRef.current.stop();
+            } catch (e) {
+                console.warn("Error stopping synth:", e);
+            }
+            synthRef.current = null;
+        }
+        if (synthControlRef.current) {
+            synthControlRef.current = null;
+        }
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close();
+            audioContextRef.current = null;
+        }
+        removeHighlights();
+    };
+
+    const cleanupSynth = () => {
+        if (synthRef.current) {
+            try {
+                synthRef.current.stop();
+            } catch (e) {
+                console.warn("Error stopping synth:", e);
+            }
+            synthRef.current = null;
+        }
+        if (synthControlRef.current) {
+            synthControlRef.current = null;
+        }
+        removeHighlights();
+    };
+
+    // Calculate transposition based on the difference between visual key and playback key
+    const calculateTransposition = () => {
+        const visualKeyTranspose = KEY_SIGNATURES.find((sig) => sig.key === selectedKey)?.semitones || 0;
+        const playbackKeyTranspose = PLAYBACK_KEYS.find((key) => key.key === playbackKey)?.semitones || 0;
+
+        // Calculate the difference in semitones
+        let transposition = playbackKeyTranspose - visualKeyTranspose;
+
+        // Normalize to range [-6, +6] to avoid extreme transpositions
+        while (transposition > 6) transposition -= 12;
+        while (transposition < -6) transposition += 12;
+
+        console.log(`Transposition: Visual key ${selectedKey} (${visualKeyTranspose}) -> Playback key ${playbackKey} (${playbackKeyTranspose}) = ${transposition} semitones`);
+        return transposition;
+    };
+
+    const updateScore = async () => {
         if (!scoreRef.current) return;
 
         const headerString = `X:1
@@ -73,18 +142,19 @@ K:${selectedKey}
 `;
 
         const fullNotation = headerString + (abcNotation || 'z4 |]');
+        const newSongId = generateSongId(abcNotation || 'z4 |]');
+        const hasNotationChanged = currentNotationRef.current !== fullNotation;
+        const isNewSong = currentSongIdRef.current !== newSongId;
+
+        currentNotationRef.current = fullNotation;
+        currentSongIdRef.current = newSongId;
 
         try {
-            // Create the visual score
             const visualObj = ABCJS.renderAbc(scoreRef.current, fullNotation, {
                 responsive: 'resize',
                 add_classes: true,
                 staffwidth: 600,
                 scale: 0.8,
-                paddingbottom: 40,
-                paddingright: 40,
-                paddingleft: 40,
-                paddingtop: 40,
                 wrap: {
                     minSpacing: 1.8,
                     maxSpacing: 2.7,
@@ -92,130 +162,131 @@ K:${selectedKey}
                 },
                 format: {
                     measurenumber: true,
-                    vocalfont: "Arial 12",
-                    composerfont: "Arial 14",
                     titlefont: "Arial 16",
                     tempofont: "Arial 12",
                     annotationfont: "Arial 10",
-                    footerfont: "Arial 10",
-                    headerfont: "Arial 10",
-                    textfont: "Arial 12",
-                    wordsfont: "Arial 12"
                 }
             });
 
-            // Store the visual object for audio initialization
             if (visualObj && visualObj.length > 0) {
                 visualObjRef.current = visualObj[0];
-                // Reset audio initialization when score changes
-                setAudioInitialized(false);
+
+                // Force synth recreation for new songs or significant changes
+                if (isNewSong || hasNotationChanged) {
+                    console.log("Recreating synth for", isNewSong ? "new song" : "notation change");
+                    await setupSynthController(true);
+                } else {
+                    await setupSynthController(false);
+                }
             }
         } catch (error) {
             console.error("Error rendering score:", error);
         }
     };
 
-    const initializeAudio = async () => {
-        if (!visualObjRef.current) {
-            console.error("No visual object available for audio");
-            return false;
-        }
+    const setupSynthController = async (forceRecreate = false) => {
+        if (!visualObjRef.current) return;
 
         try {
-            // Create audio context on user interaction
+            // Always clean up existing synth when recreating or when playback key changes
+            if (forceRecreate) {
+                console.log("Cleaning up existing synth...");
+                cleanupSynth();
+
+                // Clear the synth control div to remove old controls
+                if (synthControlDiv.current) {
+                    synthControlDiv.current.innerHTML = '';
+                }
+            }
+
+            // Initialize or resume audio context
             if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
                 audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
             }
-
-            // Resume audio context if suspended
             if (audioContextRef.current.state === 'suspended') {
                 await audioContextRef.current.resume();
             }
 
-            // Create synth if it doesn't exist
-            if (!synthRef.current) {
-                synthRef.current = new ABCJS.synth.CreateSynth();
+            // Stop current synth if playing
+            if (synthRef.current) {
+                synthRef.current.stop();
             }
 
-            // Initialize the synth with the current score
+            // Create a new synth instance
+            console.log("Creating new synth instance...");
+            synthRef.current = new ABCJS.synth.CreateSynth();
+            const transposition = calculateTransposition();
+
+            console.log("Initializing synth with transposition:", transposition);
             await synthRef.current.init({
                 audioContext: audioContextRef.current,
                 visualObj: visualObjRef.current,
                 millisecondsPerMeasure: (60000 / tempo) * timeSignature.numerator,
                 options: {
-                    program: 0, // Piano sound
-                    midiTranspose: 0,
+                    program: 0,
+                    midiTranspose: transposition,
                     qpm: tempo
                 }
             });
 
-            setAudioInitialized(true);
-            console.log("Audio initialized successfully");
-            return true;
-        } catch (error) {
-            console.error("Audio initialization failed:", error);
-            setAudioInitialized(false);
-            return false;
-        }
-    };
+            await synthRef.current.prime();
+            console.log("Synth primed successfully");
 
-    const handlePlayback = async () => {
-        if (isPlaying) {
-            // Stop playback
-            if (synthRef.current) {
-                synthRef.current.stop();
-                setIsPlaying(false);
-            }
-            return;
-        }
-
-        try {
-            // Initialize audio if not already done or if score changed
-            if (!audioInitialized || !synthRef.current) {
-                const initialized = await initializeAudio();
-                if (!initialized) {
-                    return;
+            // Define cursor control
+            const cursorControl = {
+                onStart: () => {
+                    removeHighlights();
+                },
+                onEvent: (ev) => {
+                    removeHighlights();
+                    if (ev.elements) {
+                        ev.elements.forEach((set) => {
+                            set.forEach((el) => {
+                                el.classList.add("playing-note");
+                            });
+                        });
+                    }
+                    if (ev.measureStart && ev.elements && ev.elements[0] && ev.elements[0][0]) {
+                        ev.elements[0][0].scrollIntoView({ block: "nearest", behavior: "smooth" });
+                    }
+                },
+                onFinished: () => {
+                    removeHighlights();
                 }
-            }
-
-            // Ensure audio context is running
-            if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-                await audioContextRef.current.resume();
-            }
-
-            // Start playback
-            await synthRef.current.start();
-            setIsPlaying(true);
-
-            // Handle playback end
-            const handleEnded = () => {
-                setIsPlaying(false);
             };
 
-            // Remove any existing event listeners
-            if (synthRef.current.removeEventListener) {
-                synthRef.current.removeEventListener('ended', handleEnded);
-            }
+            // Create new synth controller
+            console.log("Creating new synth controller...");
+            synthControlRef.current = new ABCJS.synth.SynthController();
+            synthControlRef.current.load(
+                synthControlDiv.current,
+                cursorControl,
+                {
+                    displayLoop: true,
+                    displayRestart: true,
+                    displayPlay: true,
+                    displayProgress: true,
+                    displayWarp: true
+                }
+            );
 
-            // Add new event listener
-            if (synthRef.current.addEventListener) {
-                synthRef.current.addEventListener('ended', handleEnded);
-            }
+            // Set the tune with the new notation
+            synthControlRef.current.setTune(visualObjRef.current, false, {
+                qpm: tempo,
+                midiTranspose: transposition
+            });
 
-        } catch (error) {
-            console.error("Playback failed:", error);
-            setIsPlaying(false);
+            console.log("Synth controller setup complete with transposition:", transposition);
 
-            // Try to reinitialize audio on next attempt
-            setAudioInitialized(false);
+        } catch (err) {
+            console.error("SynthController setup failed:", err);
+            cleanupSynth();
         }
     };
 
-    const handleStop = () => {
-        if (synthRef.current) {
-            synthRef.current.stop();
-            setIsPlaying(false);
-        }
+    const removeHighlights = () => {
+        const els = document.querySelectorAll(".playing-note");
+        els.forEach((el) => el.classList.remove("playing-note"));
     };
 
     const handleTimeSignatureChange = (sig) => {
@@ -251,22 +322,6 @@ K:${selectedKey}
             <div className="header">
                 <h1 className="title">ABC Score Viewer</h1>
                 <div className="controls">
-                    <button
-                        className="playback-button"
-                        onClick={handlePlayback}
-                        title={isPlaying ? "Pause" : "Play"}
-                        disabled={!visualObjRef.current}
-                    >
-                        {isPlaying ? <Pause size={24} /> : <Play size={24} />}
-                    </button>
-                    <button
-                        className="stop-button"
-                        onClick={handleStop}
-                        title="Stop"
-                        disabled={!isPlaying}
-                    >
-                        <Square size={24} />
-                    </button>
                     <button
                         className="settings-button"
                         onClick={() => setShowSettings(!showSettings)}
@@ -333,74 +388,19 @@ K:${selectedKey}
                             ))}
                         </select>
                     </div>
-
-                    {/* Difficulty Sliders Section */}
-                    <div className="difficulty-section">
-                        <h3 className="section-title">Difficulty Settings</h3>
-
-                        <div className="slider-group">
-                            <label>Rhythm Difficulty: {rhythmDifficulty}</label>
-                            <input
-                                type="range"
-                                min="1"
-                                max="10"
-                                value={rhythmDifficulty}
-                                onChange={(e) => setRhythmDifficulty(parseInt(e.target.value))}
-                                className="difficulty-slider"
-                            />
-                            <div className="slider-labels">
-                                <span>Simple</span>
-                                <span>Complex</span>
-                            </div>
-                        </div>
-
-                        <div className="slider-group">
-                            <label>Pitch Difficulty: {pitchDifficulty}</label>
-                            <input
-                                type="range"
-                                min="1"
-                                max="10"
-                                value={pitchDifficulty}
-                                onChange={(e) => setPitchDifficulty(parseInt(e.target.value))}
-                                className="difficulty-slider"
-                            />
-                            <div className="slider-labels">
-                                <span>Basic</span>
-                                <span>Advanced</span>
-                            </div>
-                        </div>
-
-                        <div className="slider-group">
-                            <label>Harmony Difficulty: {harmonyDifficulty}</label>
-                            <input
-                                type="range"
-                                min="1"
-                                max="10"
-                                value={harmonyDifficulty}
-                                onChange={(e) => setHarmonyDifficulty(parseInt(e.target.value))}
-                                className="difficulty-slider"
-                            />
-                            <div className="slider-labels">
-                                <span>Simple</span>
-                                <span>Complex</span>
-                            </div>
-                        </div>
-
-                        <div className="slider-group">
-                            <label>Technical Difficulty: {technicalDifficulty}</label>
-                            <input
-                                type="range"
-                                min="1"
-                                max="10"
-                                value={technicalDifficulty}
-                                onChange={(e) => setTechnicalDifficulty(parseInt(e.target.value))}
-                                className="difficulty-slider"
-                            />
-                            <div className="slider-labels">
-                                <span>Easy</span>
-                                <span>Expert</span>
-                            </div>
-                        </div>
+                    <div className="setting-group">
+                        <label>Playback Key:</label>
+                        <select
+                            className="setting-input"
+                            value={playbackKey}
+                            onChange={(e) => setPlaybackKey(e.target.value)}
+                        >
+                            {PLAYBACK_KEYS.map((key) => (
+                                <option key={key.key} value={key.key}>
+                                    {key.display}
+                                </option>
+                            ))}
+                        </select>
                     </div>
 
                     <button onClick={downloadAbc} className="download-button">
@@ -410,12 +410,7 @@ K:${selectedKey}
             )}
 
             <div ref={scoreRef} className="score-container"></div>
-
-            {!audioInitialized && (
-                <div className="audio-status">
-                    <small>Audio will initialize on first play</small>
-                </div>
-            )}
+            <div ref={synthControlDiv} className="synth-controls"></div>
         </div>
     );
 };
