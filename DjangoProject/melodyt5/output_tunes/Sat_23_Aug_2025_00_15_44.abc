@@ -1,0 +1,16 @@
+X:1
+S:3
+B:1
+E:1
+B:9
+E:0
+E:4
+B:9
+L:1/8
+M:4/4
+K:G
+(3DEF |: G2 D2 D>E G2 | c>B c>d e>f g>d | B>G B>d e>c A>G | F>A G>E D>c B>A | G2 D2 D>E G2 | 
+c>B c>d e>f g>d | B>G B>d e>c A>F |1 G2 G2 G2 (3DEF :|2 G2 G2 G2 g>a |: b>g d>B c>d e>f | 
+g>d B>G D2 C>B, | D>A F>D c>A F>D | G>F G>A B>d g>a | b>g d>B c>d e>f | g>d B>G D2 C>B, | 
+A,>D F>A d>c B>A |1 G2 G2 G2 g>a :|2 G2 G2 G4 ||
+
