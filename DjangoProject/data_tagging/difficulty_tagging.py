@@ -1,33 +1,20 @@
-#!/usr/bin/env python3
-"""
-tag_from_input_output.py
-
-Compute difficulty from BOTH the record's `input` and `output` fields, combine the
-scores (methods: max, avg, weighted), auto-calibrate thresholds (33rd/66th percentiles),
-and prepend the computed <difficulty=...> tag to `input` if it doesn't already contain one.
-
-Behavior:
- - If `input` already contains a difficulty tag, it is left unchanged.
- - `task` is preserved (or inferred if missing).
- - `output` is preserved exactly (never modified).
- - Default combine method: 'max' (conservative: if either side is hard, tag hard).
- - You can choose 'avg' or 'weighted' (and pass weights for input/output).
-
-Usage:
-    python tag_from_input_output.py --input validation.jsonl --output validation_tagged.jsonl
-    python tag_from_input_output.py --combine-method weighted --w-input 0.4 --w-output 0.6
-"""
-
 import json
 import re
 import argparse
 import numpy as np
+
 
 # -------------------------
 # Feature extraction
 # -------------------------
 def difficulty_features(abc_string):
     s = str(abc_string or "")
+
+    # Remove the unwanted B: and S: tags along with %%book and %%source
+    s = re.sub(r"%%\s*(book|source)", "", s)
+    s = re.sub(r"^B:.*$", "", s, flags=re.MULTILINE)  # Remove B: line
+    s = re.sub(r"^S:.*$", "", s, flags=re.MULTILINE)  # Remove S: line
+
     unique_pitches = len(set(re.findall(r"[A-Ga-g]", s)))
     unique_rhythms = len(set(re.findall(r"\d+", s)))
     accidentals = s.count('^') + s.count('_')
@@ -46,6 +33,7 @@ def difficulty_features(abc_string):
         "tempo": tempo
     }
 
+
 # -------------------------
 # Scoring
 # -------------------------
@@ -58,17 +46,19 @@ DEFAULT_WEIGHTS = {
     "tempo": 0.02
 }
 
+
 def calibrated_difficulty_score(abc_string, weights):
     feats = difficulty_features(abc_string)
     tempo_factor = max(feats["tempo"] - 60, 0)
     return (
-        feats["unique_pitches"] * weights["unique_pitches"] +
-        feats["unique_rhythms"] * weights["unique_rhythms"] +
-        feats["accidentals"] * weights["accidentals"] +
-        feats["ornaments"] * weights["ornaments"] +
-        feats["note_count"] * weights["note_count"] +
-        tempo_factor * weights["tempo"]
+            feats["unique_pitches"] * weights["unique_pitches"] +
+            feats["unique_rhythms"] * weights["unique_rhythms"] +
+            feats["accidentals"] * weights["accidentals"] +
+            feats["ornaments"] * weights["ornaments"] +
+            feats["note_count"] * weights["note_count"] +
+            tempo_factor * weights["tempo"]
     )
+
 
 # -------------------------
 # Helpers: detect ABC presence & tags
@@ -76,11 +66,14 @@ def calibrated_difficulty_score(abc_string, weights):
 DIFFICULTY_RE = re.compile(r"<\s*difficulty\s*=\s*(easy|medium|hard)\s*>", flags=re.I)
 ABC_PRESENCE_RE = re.compile(r"[A-Ga-g]|T:|K:|L:|M:")  # simple heuristic
 
+
 def has_difficulty_tag(s):
     return bool(s and DIFFICULTY_RE.search(s))
 
+
 def contains_abc(s):
     return bool(s and ABC_PRESENCE_RE.search(s))
+
 
 # -------------------------
 # Combine input/output scores
@@ -106,6 +99,7 @@ def combine_scores(score_in, score_out, method="max", w_in=0.5, w_out=0.5):
     else:
         # fallback to max
         return max(score_in, score_out)
+
 
 # -------------------------
 # Auto-calibration (first pass streaming)
@@ -154,6 +148,7 @@ def auto_calibrate_from_file(input_path, sample_limit=2000, weights=DEFAULT_WEIG
     medium = float(np.percentile(arr, 66))
     return weights, (easy, medium)
 
+
 # -------------------------
 # Difficulty tag selection
 # -------------------------
@@ -167,6 +162,7 @@ def get_difficulty_tag(score, thresholds):
         return "<difficulty=medium>"
     else:
         return "<difficulty=hard>"
+
 
 # -------------------------
 # Infer task (preserve if present)
@@ -186,12 +182,12 @@ def infer_task(record, output_text):
         return "segmentation"
     return "cataloging"
 
+
 # -------------------------
 # Transform: second pass writes tagged JSONL
 # -------------------------
 def transform_file(input_path, output_path, sample_calib=2000, combine_method="max",
                    w_in=0.5, w_out=0.5, dataset_name_default="ABC Notation"):
-
     print(f"Auto-calibrating from {input_path} (sampling up to {sample_calib}) ...")
     weights, thresholds = auto_calibrate_from_file(input_path, sample_limit=sample_calib,
                                                    weights=DEFAULT_WEIGHTS,
@@ -261,13 +257,14 @@ def transform_file(input_path, output_path, sample_calib=2000, combine_method="m
 
     print(f"Finished. Processed {total} lines, wrote {written} records to {output_path}")
 
+
 # -------------------------
 # CLI
 # -------------------------
 def main():
     p = argparse.ArgumentParser(description="Tag JSONL records using difficulty computed from input+output.")
-    p.add_argument("--input", "-i", default="validation.jsonl", help="input JSONL path")
-    p.add_argument("--output", "-o", default="validation_tagged.jsonl", help="output JSONL path")
+    p.add_argument("--input", "-i", default="train.jsonl", help="input JSONL path")
+    p.add_argument("--output", "-o", default="train_tagged.jsonl", help="output JSONL path")
     p.add_argument("--sample-calib", type=int, default=2000, help="how many combined scores to sample for calibration")
     p.add_argument("--combine-method", choices=("max", "avg", "weighted"), default="max",
                    help="how to combine input/output scores into a single difficulty score (default: max)")
@@ -279,6 +276,7 @@ def main():
     transform_file(args.input, args.output, sample_calib=args.sample_calib,
                    combine_method=args.combine_method, w_in=args.w_input, w_out=args.w_output,
                    dataset_name_default=args.dataset_name)
+
 
 if __name__ == "__main__":
     main()

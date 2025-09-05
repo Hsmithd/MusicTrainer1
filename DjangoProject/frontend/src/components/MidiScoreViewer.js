@@ -132,6 +132,7 @@ const ScoreViewer = ({ abcNotation = '' }) => {
 
     const updateScore = async () => {
         if (!scoreRef.current) return;
+        const cleanedAbcNotation = abcNotation.replace(/%%(book|source)/g, '');
 
         const headerString = `X:1
 T:${title}
@@ -170,6 +171,14 @@ K:${selectedKey}
 
             if (visualObj && visualObj.length > 0) {
                 visualObjRef.current = visualObj[0];
+                //make notes clickable
+                const notes = scoreRef.current.querySelectorAll(".abcjs-note");
+                notes.forEach((noteEl) => {
+                    noteEl.style.cursor = "pointer"; // show clickable cursor
+                    noteEl.addEventListener("click", () => {
+                        noteEl.classList.toggle("hidden-note");
+                    });
+                });
 
                 // Force synth recreation for new songs or significant changes
                 if (isNewSong || hasNotationChanged) {
@@ -322,14 +331,36 @@ K:${selectedKey}
             <div className="header">
                 <h1 className="title">ABC Score Viewer</h1>
                 <div className="controls">
-                    <button
-                        className="settings-button"
-                        onClick={() => setShowSettings(!showSettings)}
-                        title="Settings"
-                    >
-                        <Settings size={24} />
-                    </button>
+                  <button
+                    className="settings-button"
+                    onClick={() => setShowSettings(!showSettings)}
+                    title="Settings"
+                  >
+                    <Settings size={24} />
+                  </button>
+
+                  <button
+                    className="hide-unhide-all-button"
+                    onClick={() => {
+                      const allNotes = scoreRef.current.querySelectorAll(".abcjs-note");
+                      const areAllHidden = Array.from(allNotes).every((note) =>
+                        note.classList.contains("hidden-note")
+                      );
+
+                      // Toggle visibility based on the current state of the notes
+                      if (areAllHidden) {
+                        allNotes.forEach((note) => note.classList.remove("hidden-note"));
+                      } else {
+                        allNotes.forEach((note) => note.classList.add("hidden-note"));
+                      }
+                    }}
+                    title="Hide/Unhide All Notes"
+                  >
+                    Hide/Unhide All Notes
+                  </button>
                 </div>
+
+
             </div>
 
             {showSettings && (

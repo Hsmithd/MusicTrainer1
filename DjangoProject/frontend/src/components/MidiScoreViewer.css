@@ -260,3 +260,25 @@
     height: 20px;
   }
 }
+.hidden-note {
+  visibility: hidden;
+}
+
+.hide-unhide-all-button {
+  background: #ff6666;
+  color: white;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.hide-unhide-all-button:hover {
+  background: #e6b800;
+}
+
+.hide-unhide-all-button:active {
+  background: #cc9900;
+}
