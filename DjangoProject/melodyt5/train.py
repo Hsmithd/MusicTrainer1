@@ -8,7 +8,6 @@ from copy import deepcopy
 from utils import *
 from config import *
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
 from transformers import GPT2Config, get_constant_schedule_with_warmup
 import torch.distributed as dist
@@ -24,13 +23,12 @@ local_rank = int(os.environ.get('LOCAL_RANK', 0))
 
 if world_size > 1:
     os.environ['USE_LIBUV'] = '0'  # Disable libuv on Windows
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    dist.init_process_group(backend='nccl', init_method='env://')
+    dist.init_process_group(backend='gloo', init_method='env://')  # Use gloo for CPU
     print(f"[Rank {global_rank}] Distributed training enabled (world size={world_size})")
 else:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Single-GPU or CPU mode")
+    print("Single-CPU mode")
+
+device = torch.device("cpu")  # Explicitly set to CPU
 
 # -------------------------
 # Reproducibility
@@ -39,7 +37,6 @@ seed = 42 + global_rank
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
@@ -62,9 +59,8 @@ model = MelodyT5(patch_config, char_config).to(device)
 print("Parameter Number:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
 if world_size > 1:
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+    model = DDP(model, find_unused_parameters=True)  # No device_ids for CPU
 
-scaler = GradScaler()
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
 # -------------------------
@@ -121,13 +117,11 @@ def train_epoch():
     total_train_loss, iter_idx = 0, 1
     model.train()
     for batch in tqdm_train_set:
-        with autocast():
-            loss = process_one_batch(batch)
+        loss = process_one_batch(batch)
         if loss is None or torch.isnan(loss).item():
             continue
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
         lr_scheduler.step()
         model.zero_grad(set_to_none=True)
         total_train_loss += loss.item()
